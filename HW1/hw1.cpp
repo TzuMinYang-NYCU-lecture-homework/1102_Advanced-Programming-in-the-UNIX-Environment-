@@ -7,11 +7,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <vector>
 #include <map>
+#include <sstream>
 
 
-#define MAX_LEN 100
+#define MAX_LEN 500
 
 using namespace std;
 
@@ -20,13 +20,6 @@ void err_sys(const char* msg)
     perror(msg);
     exit(0);
 }
-
-class file
-{
-public:
-    string command = "", pid = "", username = "", fd = "", type = "unknown", inode = "", name = "";
-private:
-};
 
 class my_lsof
 {
@@ -38,14 +31,15 @@ public:
         while ((opt = getopt(argc, argv, optstring)) != -1) {
             switch (opt) {
                 case 'c':
-                    isset_c = true;
+                    is_set_c = true;
                     c_reg_pattern = optarg;
                     break;
 
                 case 't':
-                    type = optarg;
-                    isset_t = true;
-                    if(type != "REG" && type != "CHR" && type != "DIR" && type != "FIFO" && type != "SOCK" && type != "unknown")
+                    t_type = optarg;
+                    
+                    is_set_t = true;
+                    if(t_type != "REG" && t_type != "CHR" && t_type != "DIR" && t_type != "FIFO" && t_type != "SOCK" && t_type != "unknown")
                     {
                         printf("Invalid TYPE option.\n");
                         exit(0);
@@ -53,7 +47,7 @@ public:
                     break;
 
                 case 'f':
-                    isset_f = true;
+                    is_set_f = true;
                     f_reg_pattern = optarg;
                     break;
 
@@ -61,36 +55,24 @@ public:
                     break;
             }
         } 
+
+        regex c_tmp_reg(c_reg_pattern), f_tmp_reg(f_reg_pattern);
+        com_reg = c_tmp_reg;
+        file_reg = f_tmp_reg;
     }
 
-    void match_regular_expression()
+    void print(string fd)
     {
-        /*
-        regex_t preg; // 宣告編譯結果變數
-        if(regcomp(&preg, c_reg_pattern.c_str(), REG_EXTENDED|REG_ICASE) < 0) // 編譯，這邊使用 ERE，且不考慮大小寫
-        {
-            printf("regcomp error\n");
-            exit(0);
-        }
+        if(match_print())
+            cout << command << "\t" << pid << "\t" << username << "\t" << fd << "\t" << type << "\t" << inode << "\t" << filename << "\n";
+    }
 
-        string target = "testmail_10@gmail.com";   //目標字串
-        regmatch_t matchptr[1];   // 記錄匹配結果陣列，長度為1僅記錄 full match
-        const size_t nmatch = 1;    //  matchptr陣列長度
-        int status = regexec(&preg, target.c_str(), nmatch, matchptr, 0); //匹配
-        if (status == REG_NOMATCH){ // 沒匹配
-            printf("No Match\n");
-        }
-        else if (status == 0){  // 匹配
-            printf("Match\n");
-            printf("\n");
-        }
-        else {  // 執行錯誤
-            char msgbuf[256];
-            regerror(status, &preg, msgbuf, sizeof(msgbuf)); 
-            printf("error: %s\n", msgbuf);
-        }
-
-        regfree(&preg);  // 釋放*/
+    bool match_print()
+    {
+        if(is_set_t && t_type != type) return false;
+        if(is_set_c && !regex_search(command, com_reg)) return false;
+        if(is_set_f && !regex_search(filename, file_reg)) return false;
+        return true;
     }
 
     void run()
@@ -105,18 +87,19 @@ public:
 
         while((dirp = readdir(dp)) != NULL)
         {
-            string pid = dirp -> d_name;
+            pid = dirp -> d_name;
             if(!is_number(pid)) continue;
-            deal_with_pid(pid);
+            deal_with_pid();
+            memory_map.clear();
         }
 
         closedir(dp);
     }
 
-    void deal_with_pid(string pid)
+    void deal_with_pid()
     {
-        string pid_dir_path = "/proc/" + pid, username = "", command = "";
-        char char_command[MAX_LEN];
+        pid_dir_path = "/proc/" + pid;
+        char char_command[MAX_LEN] = "";
 
         struct stat buf;
         if(stat(pid_dir_path.c_str(), &buf) < 0) return;
@@ -128,88 +111,137 @@ public:
         fscanf(fd_comm,"%s", char_command);
         command = char_command;
 
-        //print_file(pid_dir_path, "cwd", "cwd", command, pid, username);
-        //print_file(pid_dir_path, "root", "rtd", command, pid, username);
-        //print_file(pid_dir_path, "exe", "txt", command, pid, username);
-        print_memory_map(pid_dir_path, "maps", "mem", command, pid, username);
+        print_file("cwd", "cwd");
+        print_file("root", "rtd");
+        print_file("exe", "txt");
+        print_memory_map("maps", "mem");
+        traverse_fd("fd");
+    }
+    
+    void traverse_fd(string path)
+    {
+        DIR *dp;
+        struct dirent *dirp;
+        if((dp = opendir(path.c_str())) == NULL)
+        {
+            if(errno == EACCES)
+            {
+                string fd = "NOFD";
+                filename = pid_dir_path + "/" + path + " (Permission denied)";
+                inode = "";
+                type = "";
+                print(fd);
+            }
+                
+            return;
+        }
+
+        chdir(path.c_str());
+        while((dirp = readdir(dp)) != NULL)
+        {
+            print_fd(dirp -> d_name);
+        }
+
+        closedir(dp);
+    }
+    
+    void print_fd(string path)
+    {
+        set_file_type(path.c_str());
+        set_inode(path.c_str());
+        set_filename(path.c_str());
+
+        if(type == "" || inode == "" || filename == "") return;
+
+        struct stat buf;
+        if(lstat(path.c_str(), &buf) < 0) return;
+
+        string fd = path;
+        if(buf.st_mode & S_IRUSR && buf.st_mode & S_IWUSR) fd = fd + "u";
+        else if(buf.st_mode & S_IRUSR) fd = fd + "r";
+        else if(buf.st_mode & S_IWUSR) fd = fd + "w";
+        else fd += "error";
+
+        print(fd);
     }
 
-    void print_memory_map(string pid_dir_path, string path, string fd, string command, string pid, string username)
+    void print_memory_map(string path, string fd)
     {
         FILE* fd_maps;
         if((fd_maps = fopen(path.c_str(), "r")) < 0) return;
         if(errno == EACCES) return;
 
-        char char_map_file[MAX_LEN] = "", tmp1[MAX_LEN], tmp2[MAX_LEN], tmp3[MAX_LEN], tmp4[MAX_LEN], inode[MAX_LEN] = "";
+        char char_buffer[MAX_LEN] = "";
+        string buffer = "";
 
-        cout << pid << "\n";
-
-        while(strcmp(char_map_file, "[heap]") != 0)
+        while(buffer.find("[heap]") == std::string::npos)
         {
-            if(fscanf(fd_maps,"%s %s %s %s %s %s", tmp1, tmp2, tmp3, tmp4, inode, char_map_file) < 6) 
+            if(fgets(char_buffer, MAX_LEN, fd_maps) == NULL) 
                 return;
-            printf("%s %s %s %s %s %s %s\n", tmp1, tmp2, tmp3, tmp4, inode, char_map_file);
+            buffer = char_buffer;
         }
-        cout << inode << " " << char_map_file;
-        printf("!!!!!!\n");
-
-        while(strcmp(char_map_file, "[stack]") != 0)
+        
+        while(buffer.find("[stack]") == std::string::npos)
         {
-            if(fscanf(fd_maps,"%s %s %s %s %s", tmp1, tmp2, tmp3, tmp4, inode) < 5) 
+            if(fgets(char_buffer, MAX_LEN, fd_maps) == NULL) 
                 return;
+            buffer = char_buffer;
 
-            if(strcmp(inode, "0") != 0)
-                if(fscanf(fd_maps,"%s", char_map_file) < 1)
-                    return;
+            if(buffer.find("/") == std::string::npos)
+                continue;
 
-
-            string map_file = char_map_file, type = "REG";
-            if(map_file.find("deleted") != std::string::npos) fd = "DEL";
+            string tmp = "";
+            type = "REG";
             
+            stringstream ss(buffer);
+            for(int i = 0; i < 4; i++)  ss >> tmp;
+            ss >> inode >> filename;
 
-            if(memory_map.count(map_file) != 0) continue;
-            memory_map[map_file] = true;
+            if(memory_map.count(filename) != 0) continue;
+            memory_map[filename] = true;
 
-            cout << command << "\t" << pid << "\t" << username << "\t" << fd << "\t" << type << "\t" << inode << "\t" << char_map_file << "\n";
+            if(buffer.find("deleted") != std::string::npos) fd = "DEL";
+
+            print(fd);
+            fd = "mem";
         }
     }
 
-    void print_file(string pid_dir_path, string path, string fd, string command, string pid, string username)
+    void print_file(string path, string fd)
     {
-        string inode = "", type = "unknown", filename = "";
-        type = get_file_type(path.c_str());
-        inode = get_inode(path.c_str());
-        filename = get_filename(path.c_str());
+        set_file_type(path.c_str());
+        set_inode(path.c_str());
+        set_filename(path.c_str());
 
         if(type == "" || inode == "" || filename == "") return;
 
         else if(filename == "permission deny")
             filename = pid_dir_path + "/" + path + " (Permission denied)";
 
-        cout << command << "\t" << pid << "\t" << username << "\t" << fd << "\t" << type << "\t" << inode << "\t" << filename << "\n";
+        if(fd == "txt") memory_map[filename] = true;
+
+        print(fd);
     }
 
-    string get_filename(const char* path)
+    void set_filename(const char* path)
     {
-        char filename[MAX_LEN];
-        if(readlink(path, filename, sizeof(filename)) < 0)
+        char char_filename[MAX_LEN] = "";
+        if(readlink(path, char_filename, sizeof(char_filename)) < 0)
         {
             if(errno == EACCES)
-                return "permission deny";
+                filename = "permission deny";
             else 
-                return "";
+                filename = "";
         }
 
-        string ans = filename;
-
-        return ans;
+        filename = char_filename;
+        if(filename.find("(deleted)") != std::string::npos) filename = filename.substr(0, filename.find("(deleted)"));
     }
 
-    string get_file_type(const char* path)
+    void set_file_type(const char* path)
     {
         struct stat buf;
-        string type = "";
-        if(stat(path, &buf) < 0) return "";
+        if(stat(path, &buf) < 0) type = "";
         switch (buf.st_mode & S_IFMT) {
             case S_IFCHR:  type = "CHR";            break;
             case S_IFDIR:  type = "DIR";            break;
@@ -218,21 +250,20 @@ public:
             case S_IFSOCK: type = "SOCK";           break;
             default:       type = "unknown";        break;
         }
-
-        return type;
     }
 
-    string get_inode(const char* path)
+    void set_inode(const char* path)
     {
         struct stat buf;
-        if(stat(path, &buf) < 0) return "";
+        if(stat(path, &buf) < 0) inode = "";
 
-        return to_string(buf.st_ino);
+        inode = to_string(buf.st_ino);
     }
 
     string uid_to_username(int uid)
     {
-        return getpwuid(uid) -> pw_name;
+        if(getpwuid(uid) != NULL) return getpwuid(uid) -> pw_name;
+        return "";
     }
 
     bool is_number(const string& str)
@@ -241,10 +272,11 @@ public:
     }
 
 private:
-    string type = "", c_reg_pattern = "", f_reg_pattern = "";
-    bool isset_t = false , isset_c = false , isset_f = false;
-    vector<file> flies;
+    string t_type = "", c_reg_pattern = "", f_reg_pattern = "";
+    string command = "", pid_dir_path = "", pid = "", username = "", inode = "", type = "", filename = "";
+    bool is_set_t = false , is_set_c = false , is_set_f = false;
     map<string, bool> memory_map;
+    regex com_reg, file_reg;
 };
 
 int main(int argc, char* argv[])

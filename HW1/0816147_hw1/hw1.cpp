@@ -116,6 +116,8 @@ public:
         print_file("exe", "txt");
         print_memory_map("maps", "mem");
         traverse_fd("fd");
+
+        fclose(fd_comm);
     }
     
     void traverse_fd(string path)
@@ -205,6 +207,8 @@ public:
             print(fd);
             fd = "mem";
         }
+
+        fclose(fd_maps);
     }
 
     void print_file(string path, string fd)

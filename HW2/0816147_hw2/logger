@@ -57,4 +57,9 @@ then
     exit 0;
 fi
 
+if [[ "$file" != "stderr" && -e $file ]]
+then
+    rm $file;
+fi
+
 FILE="$file" LD_PRELOAD="$sopath" $cmd # 透過暫時設定環境變數來讓.so獲得需要的參數

@@ -1,0 +1,60 @@
+#!/bin/bash
+
+usage_msg="usage: ./logger [-o file] [-p sopath] [--] cmd [cmd args ...]
+    -p: set the path to logger.so, default = ./logger.so
+    -o: print output to file, print to \"stderr\" if no file specified
+    --: separate the arguments for logger and for the command"
+
+file="stderr"
+sopath="./logger.so"
+cmd=""
+
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -o) 
+            if [ "$#" -lt 2 ]   # 少給參數
+            then
+                echo "$usage_msg";
+                exit 0;
+            fi
+
+            file="$2"; 
+            shift;  # 從$1開始把參數往左shift一個, $1被捨棄, $0不會被動
+        ;;
+        -p) 
+            if [ "$#" -lt 2 ]   # 少給參數
+            then
+                echo "$usage_msg";
+                exit 0;
+            fi
+
+            sopath="$2";
+            shift;
+        ;;
+        --)
+            shift; # 把--去掉
+            cmd="$@";
+            break;
+        ;;
+        *)
+            if [ "${1:0:1}" == "-" ]
+            then
+                echo "$0: invalid option -- '${1#?}'"; # #代表刪除左邊字元, ?代表單一萬用字元, 要記得用{}括起來
+                echo "$usage_msg"
+                exit 0;
+            else # 直接給cmd沒給--的情況
+                cmd="$@";
+                break;
+            fi
+        ;;
+    esac
+    shift
+done
+
+if [ "$cmd" == "" ]
+then
+    echo "no command given.";
+    exit 0;
+fi
+
+FILE="$file" LD_PRELOAD="$sopath" $cmd # 透過暫時設定環境變數來讓.so獲得需要的參數

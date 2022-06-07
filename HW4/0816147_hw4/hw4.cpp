@@ -35,6 +35,7 @@ struct breakpoint_info
 };
 
 vector<breakpoint_info> breakpoint;
+int cur_breakpoint = -1; // -1代表目前不是break
 int states = 1; // 0:any 1:not loaded 2:loaded 3:running
 pid_t child = -1;
 int status;
@@ -143,12 +144,14 @@ void detect_breakpoint(int which) // which = 0: si, else: cont
     // 檢查目前是不是在breakpoint
 
     // 1.用si跑到breakpoint前, 還沒執行到breakpoint的0xcc, 就要先判斷碰到breakpoint了
+    // !!! 看助教回應breakpoint的處理, 如果si也要先碰第一個的話這邊修改一下應該就可以了
     if(which == 0)
     {
         for(size_t i = 0; i < breakpoint.size(); ++i)
         {
             if(breakpoint[i].address == regs.rip)
             {
+                cur_breakpoint = i;
                 printf("** breakpoint @      %llx: %-32s %s\n", breakpoint[i].address, breakpoint[i].machine_code, breakpoint[i].instruction);
                 return;
             }
@@ -163,6 +166,7 @@ void detect_breakpoint(int which) // which = 0: si, else: cont
         {
             if(breakpoint[i].address == regs.rip)
             {
+                cur_breakpoint = i;
                 printf("** breakpoint @      %llx: %-32s %s\n", breakpoint[i].address, breakpoint[i].machine_code, breakpoint[i].instruction);
                 // 還原rip到還沒執行0xcc之前, 也就是讓rip-1
                 ptrace(PTRACE_SETREGS, child, 0, &regs);
@@ -172,26 +176,8 @@ void detect_breakpoint(int which) // which = 0: si, else: cont
     }
 }
 
-int leave_breakpoint()
+void leave_breakpoint()
 {
-    // 取得rip
-    struct user_regs_struct regs;
-    ptrace(PTRACE_GETREGS, child, 0, &regs);
-
-    // 看接下來要run的指令是不是breakpoint, 要用找的, 因為可能用set rip的方式改變執行順序
-    int cur_breakpoint = -1;
-    for(size_t i = 0; i < breakpoint.size(); ++i) 
-    {
-        if(regs.rip == breakpoint[i].address)
-        {
-            cur_breakpoint = i;
-            break;
-        }        
-    }
-
-    if(cur_breakpoint == -1) return 0; // 接下來要run的不是breakpoint
-
-
     // 先還原指令內容, 畢竟breakpoint這行還是要執行
     unsigned long long word;
 
@@ -208,7 +194,7 @@ int leave_breakpoint()
     word = (word & 0xffffffffffffff00) | 0xcc;
     ptrace(PTRACE_POKETEXT, child, breakpoint[cur_breakpoint].address, word); // 注意最後一個參數不用先取&, 前面給不給(void*)都可以
 
-    return 1;
+    cur_breakpoint = -1;
 }
 
 void sdb_cont() // [running]
@@ -219,7 +205,7 @@ void sdb_cont() // [running]
         return;
     }
 
-    leave_breakpoint();
+    if(cur_breakpoint != -1) leave_breakpoint();
     
     ptrace(PTRACE_CONT, child, 0, 0);               
     waitpid(child, &status, 0);
@@ -257,6 +243,9 @@ void sdb_delete(char *char_breakpoint_id) // [running]
 
     // 從vector中刪除此breakpoint
     breakpoint.erase(breakpoint.begin() + breakpoint_id);
+
+    // 若目前正處於被刪除的breakpoint, 現在就不算處於breakpoint了, 這樣等等才不會在leave_breakpoint中又被改到machine code
+    cur_breakpoint = -1;
 
     printf("** breakpoint %d deleted.\n", breakpoint_id);
 }
@@ -472,6 +461,7 @@ void sdb_load() // [not loaded]
         fclose(elf_file);
 
         states = 2;
+        cur_breakpoint = -1;
         printf("** program '%s' loaded. entry point 0x%llx\n", program, entrypoint);
     }
     else
@@ -582,7 +572,11 @@ void sdb_set(char *char_reg, char *char_val)
     else if(strcmp(char_reg, "rsi") == 0)   regs.rsi = strtoull(char_val, &endptr, 16);
     else if(strcmp(char_reg, "rbp") == 0)   regs.rbp = strtoull(char_val, &endptr, 16);
     else if(strcmp(char_reg, "rsp") == 0)   regs.rsp = strtoull(char_val, &endptr, 16);
-    else if(strcmp(char_reg, "rip") == 0)   regs.rip = strtoull(char_val, &endptr, 16);
+    else if(strcmp(char_reg, "rip") == 0)
+    {
+        cur_breakpoint = -1; // 動過rip後就不在breakpoint中了
+        regs.rip = strtoull(char_val, &endptr, 16);
+    }
     else if(strcmp(char_reg, "flags") == 0) regs.eflags = strtoull(char_val, &endptr, 16);
     ptrace(PTRACE_SETREGS, child, 0, &regs);
 }
@@ -595,7 +589,8 @@ void sdb_si()
         return;
     }
 
-    if(leave_breakpoint() == 0) // 若leave_breakpoint裡面有跑過一次SINGLESTEP, 這邊就不用跑了; 反之則這邊要跑一次
+    if(cur_breakpoint != -1) leave_breakpoint();
+    else // 因為leave_breakpoint裡面會跑一次SINGLESTEP, 所以這邊就不用跑了
     {
         ptrace(PTRACE_SINGLESTEP, child, 0, 0);               
         waitpid(child, &status, 0);        
